@@ -3,7 +3,7 @@
 //                         Joystick
 
 /////////////////////////////////////////////////////////
-
+  
 //Proposed 0000 = neutral, 0001 = up1, 0011 = up2, 0101 = dn1, 0111 = dn2
 
 void runJoystick(){
@@ -23,15 +23,11 @@ void runJoystick(){
         if (adcReading[0] == -2) stepRateMax[menuPosition - 16] -= 10;
         else if (adcReading[0] == 2) stepRateMax[menuPosition - 16] += 10;
       }
-      else if (_menuPosition == 5){
-        if (adcReading[0] == -2) axisSize[menuPosition - 20] -= 10;
-        else if (adcReading[0] == 2) axisSize[menuPosition - 20] += 10;
-      }
-      else if (menuPosition == 24){
+      else if (menuPosition == 20){
         if (adcReading[0] == -2) probeGridDist--;
         else if (adcReading[0] == 2) probeGridDist++;
       }
-      else if (menuPosition == 25){
+      else if (menuPosition == 21){
         if (adcReading[0] == -2) probePlunge -= 0.1;
         else if (adcReading[0] == 2) probePlunge += 0.1;
       }
@@ -53,7 +49,7 @@ void runJoystick(){
       else if (lastdir[1] < 0) {
         if (menuPosition == 11) {menuPosition = 4; lcd.clear();}
         else if (menuPosition == 15) menuPosition = 12;
-        else if (menuPosition == 27) menuPosition = 16;
+        else if (menuPosition == 23) menuPosition = 16;
         else menuPosition++;
       }
     }
@@ -62,12 +58,12 @@ void runJoystick(){
     for (byte i = 0; i < 2; i++){
       if (lastdir[i] != adcReading[i]){
         byte j = i * (menuPosition - 1); //Just choosing which motor to use, 0 1 or 2 (x y or z)
-        switch (adcReading[i]){
-          case -2: xyzMotors[j] -> setMaxSpeed(stepRateMax[j] * 2); xyzMotors[j]->moveTo(minmax[j][0]); break;
-          case -1: if (!lastdir[i]) xyzMotors[j] -> setMaxSpeed(stepRateMax[j] / 2); xyzMotors[j]->moveTo(minmax[j][0]); break;
-          case 0: xyzMotors[j]->stop(); break;
-          case 1: if (!lastdir[i]) xyzMotors[j] -> setMaxSpeed(stepRateMax[j] / 2); xyzMotors[j]->moveTo(minmax[j][1]); break;
-          case 2: xyzMotors[j] -> setMaxSpeed(stepRateMax[j] * 2); xyzMotors[j]->moveTo(minmax[j][1]); break;
+        if (!adcReading[i]) motors.stopOneMotor(j);
+        else {
+          if (adcReading[i]>0) motors.moveOneMotor(j, 100000000);
+          else motors.moveOneMotor(j, -100000000);
+          if (abs(adcReading[i])==1 && !lastdir[i]) motors.setOneSpeed(j, stepRateMax[j] / 8);
+          else motors.setOneSpeed(j, stepRateMax[j] * 2);
         }
         lastdir[i] = adcReading[i];
       }    

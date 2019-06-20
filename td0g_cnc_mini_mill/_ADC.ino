@@ -14,12 +14,23 @@ void analogReadAll(){
       if (abs(adc - lastadc) < 3){
         byte i = 0;
         while (adc > adcValues[i]) i++;
-        if (i & 0b00001000)  endstopState = endstopState | 0b10000000;//probeHit = 1;
+        if (i == 8)  endstopState = endstopState | 0b10000000;//probeHit = 1
         else {
-          endstopState = endstopState & 0b01111111;
-          if (endstopValues[i] == newEndstopState) endstopState = newEndstopState;
+          endstopState = endstopState & 0b01111111; //probeHit = 0
+          if (endstopValues[i] == newEndstopState && endstopState != newEndstopState) { //1.4
+            for (byte i = 0; i < 3; i++){
+              if (motors.distanceToGo(i) == 0) bitClear(newEndstopState, i);
+              else if (motors.distanceToGo(i) > 0 && ((newEndstopState >> i) & 1)) {
+                bitSet(newEndstopState, i+3);
+                bitClear(newEndstopState, i);
+              }
+            }
+            endstopState = newEndstopState;
+            endstopHit();
+          }
           newEndstopState = endstopValues[i];
         }
+        endstopState &= endstopMask;
         adcNumber = 0;
       }
       lastadc = adc;
@@ -27,13 +38,7 @@ void analogReadAll(){
     else {
       adcReading[adcNumber] = 0;
       while (adc > joystickValues[adcReading[adcNumber]]) adcReading[adcNumber]++;
-      adcReading[adcNumber] -= 2; //27500 1625
-      
-      //byte jp = 0;
-      //while (adc > joystickValues[jp]) jp++;
-      //jp = jp << (3 * adcNumber);
-      //joystickPosition = joystickPosition & joystickShift[adcNumber];
-      //joystickPosition = joystickPosition | jp;
+      adcReading[adcNumber] -= 2;
       adcNumber++;
     }
     byte adcPin;

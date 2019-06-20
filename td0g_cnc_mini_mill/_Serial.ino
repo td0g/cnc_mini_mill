@@ -18,8 +18,8 @@ void getCommand(){
       if (readFromSD){
         if (dataFile.available()) {
           c = dataFile.read();
-          Serial.write(c);
-          fileProg++;
+          if (c == 13) c = 10;  //Convert carriage return to newline
+          fileProgNextLine++;
         }
         else {
           endFileJob();
@@ -28,36 +28,33 @@ void getCommand(){
         }
       }
       else if (Serial.available()) c = Serial.read();
-      if(c == '\n') {
-        lineNumber++;
-        ignore = 0;
-        if (serialBuffer[0] == ';') sofar = 0;      //Line is a comment
-        else if (!readFromSD) doingSomething = 2;   //Execute line
-        else doingSomething = 1;
+      if(c == 10) {
+        if (sofar){
+          Serial.write(c);
+          lineNumber++;
+          ignore = 0;
+          if (serialBuffer[0] == ';') sofar = 0;      //Line is a comment
+          else if (!readFromSD) doingSomething = 2;   //Execute line
+          else doingSomething = 1;
+        }
       }
       else if(c != 0 && sofar < MAX_BUF) {
+          Serial.write(c);
         if (!ignore) serialBuffer[sofar++] = c;
-        if (c == ';') ignore = 1;
+        if (c == ';' || c == '(') ignore = 1;
         else if (c == 42) crcEnd = 1;
         if (!crcEnd) crc ^= c;
       }
     break;
     case 1:
-      if (!inputType && millis() > dwellTimer){
-        if (readFromSD){
-          float _t;
-          _t = fileProg;
-          _t /= fileSize;
-          _t *= 100;
-          while (!runLCD()){};
-          lcd.setCursor(13, 0);
-          lcd.print(_t);
-          lcd.setCursor(19, 0);
-          lcd.print(F("% "));
-        }
-        processCommand();
+      if (!motors.distanceToGo(0) && !motors.distanceToGo(1) && !motors.distanceToGo(2) && millis() > dwellTimer){
+        serialBuffer[sofar] = 0;  //VERY rare bug where parseNumber doesn't know where to stop without this line - adds a terminator
+        if (sofar) processCommand();    //CrNl results in two attempts but sofar = 0 for the second.  Stop it here.
         doingSomething = 0;
         sofar = 0;
+        fileProg += fileProgThisLine;
+        fileProgThisLine = fileProgNextLine;
+        fileProgNextLine = 0;
       }
     break;
     case 2:
@@ -88,26 +85,23 @@ void getCommand(){
 
 void processCommand() {
   static float feedLast[2] = {FEEDRATE_DEFAULT,FEEDRATE_DEFAULT};
-  static byte gZeroOne;
-  byte done = 0;
-  int cmd=parseNumber('G',-1);
-  
-  if (cmd > -1) done = 1;
+  static uint8_t gZeroOne;
+  int8_t cmd=parseNumber('G',-1);
   switch(cmd) {
-    case 0: case 1: gZeroOne = cmd; done = 0; break; // move in a line - this is done below     
+    case 0: case 1: gZeroOne = cmd; cmd = -1; break; // move in a line - this is done below     
     case 4: dwellTimer = millis() + parseNumber('P',0) * 1000; break; // wait a while
     case 29: Serial.print(F("X: ")); Serial.print(getMM(0)); Serial.print(F(" Y: ")); Serial.print(getMM(1));
-      Serial.print(F(" Z: ")); Serial.println(zProbe(parseNumber('Z', probePlunge))); done = 1;  break;
-    case 90: posABS=1; left += 4; processCommand(); break; // absolute mode
-    case 91: posABS=0; left += 4; processCommand();  break; // relative mode
+      Serial.print(F(" Z: ")); Serial.println(zProbe(parseNumber('Z', probePlunge)));  break;
+    case 90: posABS=1; break; // absolute mode
+    case 91: posABS=0; break; // relative mode
     case 92: 
-      for (byte i = 0; i < 3; i++)xyzMotors[i]->setCurrentPosition(parseNumber(axisLetter[i], getMM(i)) * stepPerMM[i]);
+      for (byte i = 0; i < 3; i++)motors.setCurrentPosition(i, parseNumber(axisLetter[i], getMM(i)) * stepPerMM[i]);
+      //for (byte i = 0; i < 3; i++)xyzMotors[i]->setCurrentPosition(parseNumber(axisLetter[i], getMM(i)) * stepPerMM[i]);
     break;
   }
 
-  if (!done){
+  if (cmd == -1){
     cmd=parseNumber('M',-1);
-    if (cmd > -1) done = 1;
     switch(cmd) {
       case 3: tool(1); break;
       case 5: tool(0); break;
@@ -122,10 +116,12 @@ void processCommand() {
           Serial.print(F(" "));
         }
       break;
+      case 120: endstopMask = 0b11111111; break;
+      case 121: endstopMask = 0b10000000; break;
     }
   }
   
-  if (!done){
+  if (cmd == -1){
     float _xyz[3];
     for (byte i = 0; i < 3; i++){
       if (posABS) _xyz[i] = parseNumber(axisLetter[i], getMM(i));
@@ -139,7 +135,7 @@ void processCommand() {
 
 
 float parseNumber(char code,float val) {
-  char *ptr=serialBuffer + left;  // start at the beginning of buffer
+  char *ptr=serialBuffer;  // start at the beginning of buffer
   while((long)ptr > 1 && (*ptr) && (long)ptr < (long)serialBuffer+sofar) {  // walk to the end
     if(*ptr==code) {  // if you find code on your walk,
       return atof(ptr+1);  // convert the digits that follow into a float and return it

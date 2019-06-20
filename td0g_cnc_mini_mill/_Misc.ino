@@ -35,11 +35,13 @@ void setPause(byte p){
 
 
 float zProbe(float probedist){
-  unsigned long startZ = z.currentPosition();
-  z.move(fabs(probedist) * stepPerMM[2] * -1);
-  z.setSpeed(0.4 * stepPerMM[2]);
+  unsigned long startZ = motors.currentPosition(2);//z.currentPosition();
+  motors.setOneSpeed(2, 0.4 * stepPerMM[2]);
+  motors.moveOneMotor(2, fabs(probedist) * stepPerMM[2] * -1);
+  //z.move(fabs(probedist) * stepPerMM[2] * -1);
+  //z.setSpeed(0.4 * stepPerMM[2]);
   inputType = 1;
-  while (!(endstopState & 0b10000000) && runMotors()){
+  while (!(endstopState & 0b10000000) && motors.distanceToGo(2)){//runMotors()){
     analogReadAll();
     printPositionscreen();
   }
@@ -47,10 +49,11 @@ float zProbe(float probedist){
   if (endstopState & 0b10000000)_z = getMM(2);
   else _z = 9999;
   inputType = 0;
-  z.setSpeed(0);
-  z.setMaxSpeed(stepPerMM[2]);
-  z.moveTo(startZ);
-  while (runMotors()){
+  
+  //z.setSpeed(0);
+  motors.moveOneMotor(2, startZ);//z.setMaxSpeed(stepPerMM[2]);
+  motors.setOneSpeed(2, stepPerMM[2]);//z.moveTo(startZ);
+  while (motors.distanceToGo(2)){//runMotors()){
     printPositionscreen();
     analogReadAll();
   }  
@@ -75,10 +78,11 @@ void probeGrid(){
 
 //Calculate number of probes
   for (byte i = 0; i < 2; i++){
-    xyzMotors[i]->setMaxSpeed(stepRateMax[i] * 2);
+    motors.setOneSpeed(i, stepRateMax[i]*2);
+    //xyzMotors[i]->setMaxSpeed(stepRateMax[i] * 2);
     _xyMovementSize[i] = getMM(i);
     _xyDivisors[i] = 1;
-    if (xyzMotors[i]->currentPosition()){
+    if (motors.currentPosition(i)){//xyzMotors[i]->currentPosition()){
       while ((float)_xyDivisors[i] * probeGridDist < fabs(_xyMovementSize[i])) _xyDivisors[i]++;
       _xyMovementSize[i] /= _xyDivisors[i];
       _xyDivisors[i]++;
@@ -104,7 +108,7 @@ void probeGrid(){
       _targetxyz[shortAxis] += _xyMovementSize[shortAxis];
       lineAbs(_targetxyz, 600);
       inputType = 0;
-      while (runMotors()){
+      while (motors.distanceToGo(2)){//runMotors()){
         printPositionscreen();
         analogReadAll();
       }

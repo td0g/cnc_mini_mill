@@ -44,6 +44,30 @@ Version History
   2019-05-05
   Added EEPROM settings
   Added percent completion for SD jobs
+
+1.2
+  2019-05-08
+  Reduced overhead of calculating SD job percentage done
+  Reduced overhead of position printing function
+  Reduced size of EEPROM settings
+  Fixed SD Bug
+  Fixed gcode bug
+  General code size reduction
+
+1.3
+  2019-05-26
+  Added 'Resume Job' option for SD jobs
+  Ignores second line ending character (CrLf)
+
+1.4
+  2019-06-14
+  Removed build dimension limits - only relies on limit switches now
+  M120, M121 gcode support
+  Z-Probing origin now sets Z=0
+
+2.0
+  2019-06-16
+  Replaced Accelstepper with DogStep
   
   
 VALID GCODE
@@ -58,33 +82,35 @@ VALID GCODE
  M105: RETURN DUMMY TEMPERATURE
  M114: GET POSITION
  M119: GET ENDSTOP STATE
+ M120: ENABLE ENDSTOPS
+ M121: DISABLE ENDSTOPS
  */
 
 //General Definitions
-  #define VERSION "1.1"
+  #define VERSION "2.0"
 
+
+
+  
   #define BAUD 57600
   #define MAX_BUF 40 // What is the longest message Arduino can store?
   #define BUTTON_DEBOUNCE 300
   #define BUTTON_LONGHOLD 600
   #define DEFAULT_PROBE_GRID_DIST 25
   #define DEFAULT_PROBE_PLUNGE 1.8
-
-  #define DEFAULT_X_SIZE 26250  //175mm
-  #define DEFAULT_Y_SIZE 18750  //150mm
-  #define DEFAULT_Z_SIZE 13120  //17.5mm
+  #define LCD_REFRESH_INTERVAL 40
 
   #define FEEDRATE_DEFAULT 60 //mm/min
   
   #define X_STEPRATE_MAX 300
-  #define Y_STEPRATE_MAX 300
+  #define Y_STEPRATE_MAX 600
   #define Z_STEPRATE_MAX 300
   #define X_STEPRATE_MAX_JOYSTICK 2000
   #define Y_STEPRATE_MAX_JOYSTICK 1500
   #define Z_STEPRATE_MAX_JOYSTICK 2000
 
   #define X_STEPS_PER_MM 150  //2 mm/s
-  #define Y_STEPS_PER_MM 125  //2.3 mm/s
+  #define Y_STEPS_PER_MM 250  //2.3 mm/s
   #define Z_STEPS_PER_MM 750  //0.4 mm/s
 
   #define ACCELERATION 2000
@@ -107,6 +133,7 @@ VALID GCODE
   #define Z_EN_PIN 2
 
 
+
 //General
   byte menuPosition = 2;
   #define PRINT_LCD menuPosition = menuPosition | 0b10000000
@@ -114,7 +141,6 @@ VALID GCODE
 //Serial
   char serialBuffer[MAX_BUF];
   int sofar;
-  byte left;
   const char axisLetter[3] = {'X', 'Y', 'Z'};
 
 //Mechanics
@@ -127,21 +153,15 @@ VALID GCODE
 //ADC
   int8_t adcReading[] = {0, 0};
   byte endstopState;
+  byte endstopMask = 0b11111111;
   byte joystickPosition;
 
 //Motor
-  #include <AccelStepper.h>
-  AccelStepper x(1, X_STEP_PIN, X_DIR_PIN);
-  AccelStepper y(1, Y_STEP_PIN, Y_DIR_PIN);
-  AccelStepper z(1, Z_STEP_PIN, Z_DIR_PIN);
+  #include "d0gStep.h"
+  d0gStep motors(3);
   unsigned int stepRateMax[3] = {X_STEPRATE_MAX, Y_STEPRATE_MAX, Z_STEPRATE_MAX};
   int stepPerMM[3] = {X_STEPS_PER_MM, Y_STEPS_PER_MM, Z_STEPS_PER_MM};
-  AccelStepper* xyzMotors[3] = {&x, &y, &z};
   byte pause = 0;
-  int minmax[3][2] = {{-DEFAULT_X_SIZE, DEFAULT_X_SIZE},
-                      {-DEFAULT_Y_SIZE, DEFAULT_Y_SIZE},
-                      {-DEFAULT_Z_SIZE, DEFAULT_Z_SIZE}};
-  unsigned int axisSize[3] = {DEFAULT_X_SIZE, DEFAULT_Y_SIZE, DEFAULT_Z_SIZE};
 
 //SD Card
   #include <SPI.h>
@@ -153,9 +173,12 @@ VALID GCODE
   byte cardAvailable;
   unsigned long fileSize;
   unsigned long fileProg;
+  byte fileProgThisLine;
+  byte fileProgNextLine;
+  byte fileResumeIndex;
 
 //LCD
-  #include <Wire.h>
+  //#include <Wire.h>
   #include <LCD.h>
   #include <LiquidCrystal_I2C.h>  // F Malpartida's NewLiquidCrystal library
   //Definitions for the LCD I2C module
@@ -184,8 +207,6 @@ void setup() {
   
 //LCD    
   lcd.begin (20,4);  // initialize the lcd
-  lcd.backlight();
-  Wire.setClock(400000); // 1000000 or 400000
   
 //ADC & UI
   ADCSRA =  bit (ADEN);   // turn ADC on
@@ -202,7 +223,7 @@ void setup() {
 //Other setup
   PRINT_LCD;
   Serial.print(F("TD0G v"));
-  Serial.print(VERSION);
+  Serial.print(F(VERSION));
   Serial.println(F(" ['?']")); //Do we really need this?  Repetier Host seems to think so...
   while (millis() < 500){
     analogReadAll();
@@ -210,21 +231,16 @@ void setup() {
   }
 
 //Motors
-  pinMode(XY_EN_PIN, OUTPUT);
-  pinMode(Z_EN_PIN, OUTPUT);
-  for (byte i = 0; i < 3; i++) xyzMotors[i] -> setAcceleration(ACCELERATION);
-  x.setPinsInverted(true, false, true);
-  y.setPinsInverted(true, false, true);
-  z.setPinsInverted(false, false, true); //first is dir
+  motors.attachMotor(X_STEP_PIN, X_DIR_PIN, XY_EN_PIN);
+  motors.attachMotor(Y_STEP_PIN, Y_DIR_PIN, XY_EN_PIN);
+  motors.attachMotor(Z_STEP_PIN, Z_DIR_PIN, Z_EN_PIN);
 }
 
 void loop(){
   analogReadAll();    //Get endstop state and joystick position, report using global variables
-  runMotors();        //Using Accelstepper library, also watch and respond to endstop status
   runUI();            //Respond to button presses
   runJoystick();      //Respond to joystick movements
   getCommand();       //Respond to serial communications
-  runLCD();           //Print position to LCD without blocking, one character at a time
   printScreen();      //Update LCD when requested      
-  if (menuPosition < 4) printPositionscreen();  //Pass position to runLCD function
+  printPositionscreen();  //Pass position to runLCD function
 }
