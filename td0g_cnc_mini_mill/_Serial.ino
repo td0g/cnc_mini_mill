@@ -5,98 +5,64 @@
 /////////////////////////////////////////////////////////
 
 void getCommand(){
-  static byte crc;
-  static byte doingSomething;
-  static byte crcEnd = 0;
-  static byte crcGood = 0;
-  static unsigned long lineNumber = 0;
-  static byte ignore = 0;
-  switch (doingSomething){
-    case 0:
-      char c;
-      c = 0;
-      if (readFromSD){
-        if (dataFile.available()) {
-          c = dataFile.read();
-          if (c == 13) c = 10;  //Convert carriage return to newline
-          fileProgNextLine++;
-        }
-        else {
-          endFileJob();
-          lcd.setCursor(17, 0);
-          lcd.print(F("DONE"));
-        }
+  if (sofar && serialBuffer[sofar - 1] == 10) {
+    if (serialBuffer[0] == ';') sofar = 0;      //Line is a comment
+    else if (millis() > dwellTimer){
+      serialBuffer[sofar] = 0;  //VERY rare bug where parseNumber doesn't know where to stop without this line - adds a terminator
+      if ((isCommandMovement() && motors.canQueue()) || !motors.moving()){
+        if (processCommand()) sofar = 0;
       }
-      else if (Serial.available()) c = Serial.read();
-      if(c == 10) {
-        if (sofar){
-          Serial.write(c);
-          lineNumber++;
-          ignore = 0;
-          if (serialBuffer[0] == ';') sofar = 0;      //Line is a comment
-          else if (!readFromSD) doingSomething = 2;   //Execute line
-          else doingSomething = 1;
-        }
-      }
-      else if(c != 0 && sofar < MAX_BUF) {
-          Serial.write(c);
-        if (!ignore) serialBuffer[sofar++] = c;
-        if (c == ';' || c == '(') ignore = 1;
-        else if (c == 42) crcEnd = 1;
-        if (!crcEnd) crc ^= c;
-      }
-    break;
-    case 1:
-      if (!motors.distanceToGo(0) && !motors.distanceToGo(1) && !motors.distanceToGo(2) && millis() > dwellTimer){
-        serialBuffer[sofar] = 0;  //VERY rare bug where parseNumber doesn't know where to stop without this line - adds a terminator
-        if (sofar) processCommand();    //CrNl results in two attempts but sofar = 0 for the second.  Stop it here.
-        doingSomething = 0;
-        sofar = 0;
-        fileProg += fileProgThisLine;
-        fileProgThisLine = fileProgNextLine;
-        fileProgNextLine = 0;
-      }
-    break;
-    case 2:
-        byte printedCRC;
-        printedCRC = parseNumber(42, crc);
-        if (crc == printedCRC){
-          doingSomething = 1;
-          crc = 0;
-          crcEnd = 0;
-          Serial.println(F("ok "));
-        }
-        else {
-          while (Serial.available()) Serial.read();
-          sofar = 0;
-          Serial.print(F("N"));
-          Serial.print(lineNumber);
-          Serial.print(F(" Expected Checksum "));
-          Serial.print(crc);
-          Serial.print(F(" ("));
-          Serial.print(printedCRC);
-          Serial.println(F(")"));
-          lineNumber--;
-          doingSomething = 0;
-        }
-    break;
+    }
   }
+  else {
+    char c = 0;
+    if (externalInputMovement == 2){
+      if (dataFile.available()) c = dataFile.read();
+      else if (sofar) c = 10;
+      else if (!motors.moving()) endFileJob();
+    }
+    else if (Serial.available()) c = Serial.read();
+    if (c){
+      Serial.write(c);
+      if (c == 13) c = 10;  //Convert carriage return to newline
+      else if (c > 96 && c < 123) c -= 32; //Convert to uppercase
+      if (!sofar || c == 10) {
+        serialBuffer[sofar] = c;
+        sofar++;
+      }
+      else if(sofar < MAX_BUF && serialBuffer[sofar-1] != ';' && serialBuffer[sofar-1] != '(') {
+        serialBuffer[sofar] = c;
+        sofar++;
+      }
+      if (c == 10) fileProg++;
+    }
+  }
+  TEST_FREE_MEMORY;
 }
 
-void processCommand() {
-  static float feedLast[2] = {FEEDRATE_DEFAULT,FEEDRATE_DEFAULT};
+bool isCommandMovement(){
+  int8_t g = parseNumber('G',-1);
+  if (g == 0 || g == 1) return true;  //Is a G0 or G1
+  else if (g == -1 && parseNumber('M',-1) == -1) return true; //Is a movement without G0/G1 (eg. X..Y..Z..)
+  return false;
+}
+
+
+bool processCommand() {
+  static float feedLast[2] = {FEEDRATE_DEFAULT_G0,FEEDRATE_DEFAULT_G1};
   static uint8_t gZeroOne;
+  static uint8_t posABS = 1;
   int8_t cmd=parseNumber('G',-1);
+
   switch(cmd) {
     case 0: case 1: gZeroOne = cmd; cmd = -1; break; // move in a line - this is done below     
     case 4: dwellTimer = millis() + parseNumber('P',0) * 1000; break; // wait a while
     case 29: Serial.print(F("X: ")); Serial.print(getMM(0)); Serial.print(F(" Y: ")); Serial.print(getMM(1));
-      Serial.print(F(" Z: ")); Serial.println(zProbe(parseNumber('Z', probePlunge)));  break;
+      Serial.print(F(" Z: ")); Serial.println(zProbe(false));  break;
     case 90: posABS=1; break; // absolute mode
     case 91: posABS=0; break; // relative mode
     case 92: 
-      for (byte i = 0; i < 3; i++)motors.setCurrentPosition(i, parseNumber(axisLetter[i], getMM(i)) * stepPerMM[i]);
-      //for (byte i = 0; i < 3; i++)xyzMotors[i]->setCurrentPosition(parseNumber(axisLetter[i], getMM(i)) * stepPerMM[i]);
+      for (byte i = 0; i < 3; i++)motors.setMotorPosition(i, parseNumber(axisLetter[i], getMM(i)) * stepPerMM[i]);
     break;
   }
 
@@ -105,14 +71,13 @@ void processCommand() {
     switch(cmd) {
       case 3: tool(1); break;
       case 5: tool(0); break;
-      case 18: break; // turns off power to steppers (releases the grip)
       case 105: Serial.println(F("T:0 B:0")); break;
       case 114: case 119:
         for (byte i = 0; i < 3; i++){
           Serial.print(axisLetter[i]);
           Serial.print(F(":"));
           if (cmd == 114) Serial.print(getMM(i));
-          else Serial.print((endstopState >> i) & 1);
+          else Serial.print((globalEndstopState >> i) & 1);
           Serial.print(F(" "));
         }
       break;
@@ -120,16 +85,48 @@ void processCommand() {
       case 121: endstopMask = 0b10000000; break;
     }
   }
-  
+
+  //Is a movement
   if (cmd == -1){
-    float _xyz[3];
+    float _timeInSeconds = 0;
+    long xyzInt[3];
+    float _s;
     for (byte i = 0; i < 3; i++){
-      if (posABS) _xyz[i] = parseNumber(axisLetter[i], getMM(i));
-      else _xyz[i] = parseNumber(axisLetter[i], 0) + getMM(i);
+      float _parse = parseNumber(axisLetter[i], 10000);
+      if (_parse > 1000) xyzInt[i] = motors.noMovement;
+      else {
+        xyzInt[i] = stepPerMM[i] * _parse;
+        if (!posABS) xyzInt[i] += motors.lastQueuedTarg(i);
+        else {
+          _s = motors.lastQueuedTarg(i);
+          _s /= stepPerMM[i];
+          _parse -= _s;
+        }
+        _timeInSeconds = _timeInSeconds + _parse * _parse;
+      }
     }
-    feedLast[gZeroOne] = parseNumber('F',feedLast[gZeroOne]);
-    lineAbs(_xyz, feedLast[gZeroOne]);
+    _timeInSeconds = sqrt(_timeInSeconds);
+    
+    _s = parseNumber('F',feedLast[gZeroOne]);
+    if (_s > 0) feedLast[gZeroOne] = _s;
+    else _s = feedLast[gZeroOne];
+    _s *= speedMultiplier;
+    _s /= 100;
+    
+    _timeInSeconds = _timeInSeconds * 60 / _s;
+    TEST_FREE_MEMORY;
+    if (motors.queueMotorsMovement(xyzInt, _timeInSeconds)){
+      if (!externalInputMovement){
+        externalInputMovement = 1;
+        PRINT_LCD;
+      }
+      menuPosition = 1;
+      return true;
+    }
+    return false;
   }
+  TEST_FREE_MEMORY;
+  return true;
 }
 
 

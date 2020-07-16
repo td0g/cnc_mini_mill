@@ -1,24 +1,22 @@
 void importSettings(){
   byte _address;
-  _address = 0;
-  if (EEPROMReadint(0) == 0b1111111111111111 || !EEPROMReadint(0)) exportSettings();
+  _address = EEPROM_SETTINGS_LOCATION;
+  if (EEPROMReadint(EEPROM_SETTINGS_LOCATION) == 0b1111111111111111 || !EEPROMReadint(EEPROM_SETTINGS_LOCATION)) exportSettings();
   for (byte i = 0; i < 3; i++){
-    stepRateMax[i] = EEPROMReadint(_address);
+    motors.maxSpeed(i, EEPROMReadint(_address));
     _address += 2;
   }
-  probePlunge = EEPROM.read(12);
-  probePlunge /= 10;
-  probeGridDist = EEPROM.read(13);
+  probePlunge = EEPROM.read(12 + EEPROM_SETTINGS_LOCATION);
+  probeReturn = EEPROM.read(14 + EEPROM_SETTINGS_LOCATION);
+  probeGridDist = EEPROM.read(13 + EEPROM_SETTINGS_LOCATION);
 }
 
 void exportSettings(){
-  for (byte i = 0; i < 3; i++){
-    EEPROMWriteint(i * 2, stepRateMax[i]);
-  }
-  byte _b;
-  _b = probePlunge * 10;
-  EEPROM.update(12, _b);
+  //byte _b;
+  for (byte _b = 0; _b < 3; _b++)EEPROMWriteint(_b * 2, motors.maxSpeed(_b));
+  EEPROM.update(12, probePlunge);
   EEPROM.update(13, probeGridDist);
+  EEPROM.update(14, probeReturn);
 }
 
 unsigned int EEPROMReadint(unsigned int _i){
@@ -28,14 +26,7 @@ unsigned int EEPROMReadint(unsigned int _i){
   _t += EEPROM.read(_i + 1);
   return (_t);
 }
-/*
-void EEPROMWriteint(unsigned int _i, unsigned long _v, byte _s){
-  for (byte i = 0; i < _s; i++){
-    byte _b = ((_v >> (8 * i)) & 0xFF);
-    EEPROM.update(_i + i, _b);
-  }
-}
-*/
+
 void EEPROMWriteint(unsigned int _i, unsigned int _d){
   byte t;
   t = _d;
@@ -59,4 +50,34 @@ long EEPROMReadlong(int address){
     _d += EEPROM.read(address - i);
   }
 return _d;
+}
+
+void saveMotorPosition(){
+  EEPROMWriteint(EEPROM_POSITION_LOCATION + EEPROM_POSITION_SIZE_BYTES, motors.currentPosition(0) + 32000);
+  EEPROMWriteint(EEPROM_POSITION_LOCATION+2 + EEPROM_POSITION_SIZE_BYTES, motors.currentPosition(1) + 32000);
+  EEPROMWriteint(EEPROM_POSITION_LOCATION+4 + EEPROM_POSITION_SIZE_BYTES, motors.currentPosition(2) + 32000);
+}
+
+void clearMotorPosition(){
+  EEPROMWriteint(EEPROM_POSITION_LOCATION + EEPROM_POSITION_SIZE_BYTES, 32000);
+  EEPROMWriteint(EEPROM_POSITION_LOCATION+2 + EEPROM_POSITION_SIZE_BYTES, 32000);
+  EEPROMWriteint(EEPROM_POSITION_LOCATION+4 + EEPROM_POSITION_SIZE_BYTES, 32000);
+}
+
+void loadMotorPosition(){
+  motors.setMotorPosition(0, (int)EEPROMReadint(EEPROM_POSITION_LOCATION + EEPROM_POSITION_SIZE_BYTES) - 32000);
+  motors.setMotorPosition(1, (int)EEPROMReadint(EEPROM_POSITION_LOCATION+2 + EEPROM_POSITION_SIZE_BYTES) - 32000);
+  motors.setMotorPosition(2, (int)EEPROMReadint(EEPROM_POSITION_LOCATION+4 + EEPROM_POSITION_SIZE_BYTES) - 32000);
+}
+
+void saveFilePosition(){
+  EEPROMWriteint(EEPROM_FILE_POSITION_LOCATION, fileResumeIndex);
+  EEPROMWritelong(EEPROM_FILE_POSITION_LOCATION + 2, fileProg);
+  //EEPROMWritelong(EEPROM_FILE_POSITION_LOCATION + 6, fileSize);
+  EEPROMWritelong(EEPROM_FILE_POSITION_LOCATION + 6, dataFile.size());
+}
+
+void loadFilePosition(){
+  fileResumeIndex = EEPROMReadint(EEPROM_FILE_POSITION_LOCATION);
+  fileProg = EEPROMReadlong(EEPROM_FILE_POSITION_LOCATION + 2);
 }

@@ -1,3 +1,5 @@
+
+
 /*
   Written by Tyler Gerritsen
   vtgerritsen@gmail.com
@@ -68,6 +70,74 @@ Version History
 2.0
   2019-06-16
   Replaced Accelstepper with DogStep
+  Shifting during job
+  Improvement to button read algorithm
+
+2.1
+  2019-07-23
+  Fixed SD resume/restart control bug
+  Single Probe now sets Z=0
+  Can end probe cycle by pressing button
+  When job is paused, position is saved to EEPROM and machine can be shut down
+  Also can manually save/clear position in menu
+  M17/M18 Support for enable/disable steppers
+  Also can manually enable/disable steppers in menu
+
+2.2
+  2019-08-19
+  Watchdog Timer -> removed as it wasnt doing any good
+  Fixed Settings Bug
+  File progress can be saved to EEPROM
+
+2.3
+  2019-08-29
+  Feedrate Multiplier
+  Accepts lowercase characters
+  Multiple motor position save slots
+  Removed all zProbe parameters - uses global variables ALWAYS
+  New zProbe raise parameter (EEPROM)
+  Fixed probe grid bugs
+  Countdown probe grid probes left
+  Fixed display errant character bug  
+
+2.4
+  2020-01-17
+  Checks for F is 0 or negative
+  Improvements to endstop algorithm
+  Needs long-hold to turn on tool (short-press to turn off)
+  Resume file function actually checks if it is the same file
+  Simplified lineAbs function (doesn't need so much optimization anymore)
+  Updates to d0gStep library
+  Endstop and free memory displayed
+  Option to disable endstops in menu
+  Fixed Grid Probe doesn't end on 0
+  Removed multiple position save slots - only one
+  Removed automatic position save when pausing
+  Z-probe reports 3 decimal places
+
+2.5
+  2020-03-02
+  Update to d0gStep library
+    Supports Multi-Stepping
+    Supports movement queuing
+  Fixed gcode parsing bug (_xyzf[4])
+
+2.6
+  2020-03-06
+  Dynamic queue size
+  Minor step algorithm enhancements
+  Significantly reduced probe grid function
+  More general optimization - Code size greatly reduced in preparation for d0gStep improvement
+  Fixed file position save algorithm (broken when queueing was introduced)
+  4-file limit on SD card dropped
+
+2.7
+  2020-06-20
+  Fixed occasional freezing when pausing bug (new interruptSoon() function)
+  Fixed max speed edit bug
+  Fixed freezing on probing large grids bug
+  Fixed unable to decelerate from 2849 step/s bug
+  Manual jog max speed now 50% higher than standard max speed
   
   
 VALID GCODE
@@ -79,6 +149,8 @@ VALID GCODE
  G92: SET POSITION
  M3: SPINDLE ON
  M5: SPINDLE OFF
+ M17: ENABLE STEPPERS
+ M18: DISABLE STEPPERS
  M105: RETURN DUMMY TEMPERATURE
  M114: GET POSITION
  M119: GET ENDSTOP STATE
@@ -87,31 +159,31 @@ VALID GCODE
  */
 
 //General Definitions
-  #define VERSION "2.0"
-
-
-
+  #define VERSION "2.7"
   
+  //#define MOTOR_DEBUG
+  //#define NEW_JOYSTICK_SETUP
+
   #define BAUD 57600
   #define MAX_BUF 40 // What is the longest message Arduino can store?
   #define BUTTON_DEBOUNCE 300
   #define BUTTON_LONGHOLD 600
-  #define DEFAULT_PROBE_GRID_DIST 25
+  #define DEFAULT_PROBE_GRID_DIST 5
   #define DEFAULT_PROBE_PLUNGE 1.8
-  #define LCD_REFRESH_INTERVAL 40
+  #define DEFAULT_PROBE_RETURN 0.5
+  #define LCD_REFRESH_INTERVAL 60 //millis
+  #define PROBE_DITHER 0.1
 
-  #define FEEDRATE_DEFAULT 60 //mm/min
+  #define FEEDRATE_DEFAULT_G0 120 //mm/min
+  #define FEEDRATE_DEFAULT_G1 30 //mm/min
   
-  #define X_STEPRATE_MAX 300
-  #define Y_STEPRATE_MAX 600
-  #define Z_STEPRATE_MAX 300
-  #define X_STEPRATE_MAX_JOYSTICK 2000
-  #define Y_STEPRATE_MAX_JOYSTICK 1500
-  #define Z_STEPRATE_MAX_JOYSTICK 2000
+  #define X_STEPRATE_MAX 1150
+  #define Y_STEPRATE_MAX 2500
+  #define Z_STEPRATE_MAX 500
 
   #define X_STEPS_PER_MM 150  //2 mm/s
-  #define Y_STEPS_PER_MM 250  //2.3 mm/s
-  #define Z_STEPS_PER_MM 750  //0.4 mm/s
+  #define Y_STEPS_PER_MM 750  //2.3 mm/s
+  #define Z_STEPS_PER_MM 1500  //0.4 mm/s
 
   #define ACCELERATION 2000
 
@@ -132,49 +204,58 @@ VALID GCODE
   #define Z_DIR_PIN 4
   #define Z_EN_PIN 2
 
-
+  #define ENABLE_STEPPERS digitalWrite(XY_EN_PIN, 0); digitalWrite(Z_EN_PIN, 0);
+  #define DISABLE_STEPPERS digitalWrite(XY_EN_PIN, 1); digitalWrite(Z_EN_PIN, 1); 
+  #define IS_STEPPER_DISABLED (digitalRead(XY_EN_PIN))
+  #define IS_MOTOR_POSITION_SAVED (EEPROMReadint(EEPROM_POSITION_LOCATION + EEPROM_POSITION_SIZE_BYTES) != 32000 || EEPROMReadint(EEPROM_POSITION_LOCATION + EEPROM_POSITION_SIZE_BYTES + 2) != 32000 || EEPROMReadint(EEPROM_POSITION_LOCATION + EEPROM_POSITION_SIZE_BYTES + 4) != 32000)
+  #define RESET ////WATCHDOG_ON; while (1){};
+  #define RETURN_TO_MOVEMENT_MENU menuPosition = 2////WATCHDOG_ON; menuPosition = 2;
+  #define TEST_FREE_MEMORY minMemory = min(minMemory, freeMemory())
+  #define RESET_FREE_MEMORY minMemory = freeMemory()
+  #define FLOAT_NAN 0xFFFFFFFF
 
 //General
   byte menuPosition = 2;
   #define PRINT_LCD menuPosition = menuPosition | 0b10000000
+  #include <avr/wdt.h> /* Header for watchdog timers in AVR */
 
 //Serial
-  char serialBuffer[MAX_BUF];
+  char serialBuffer[MAX_BUF+1];
   int sofar;
   const char axisLetter[3] = {'X', 'Y', 'Z'};
 
 //Mechanics
   unsigned long dwellTimer;
-  byte posABS = 1;
-  byte inputType = 0;
-  float probePlunge = DEFAULT_PROBE_PLUNGE;
+  byte externalInputMovement = 0;
+  byte probePlunge = DEFAULT_PROBE_PLUNGE * 10;
+  byte probeReturn = DEFAULT_PROBE_RETURN * 10;
   byte probeGridDist = DEFAULT_PROBE_GRID_DIST;
+  byte endstopMaskGlobal = 0b10101010;  //[Probe][][Zmax][Ymax][Xmax][Zmin][Ymin][Xmin]
 
 //ADC
   int8_t adcReading[] = {0, 0};
-  byte endstopState;
-  byte endstopMask = 0b11111111;
-  byte joystickPosition;
+  byte globalEndstopState;
+  byte endstopMask = 0b10000000; //OFF default
 
 //Motor
   #include "d0gStep.h"
-  d0gStep motors(3);
-  unsigned int stepRateMax[3] = {X_STEPRATE_MAX, Y_STEPRATE_MAX, Z_STEPRATE_MAX};
-  int stepPerMM[3] = {X_STEPS_PER_MM, Y_STEPS_PER_MM, Z_STEPS_PER_MM};
+  #define STEPPER_QUEUE_SIZE 3
+  d0gStep motors(3, DISABLE_8_SECONDS, XY_EN_PIN, STEPPER_QUEUE_SIZE);
+  const int stepPerMM[3] = {X_STEPS_PER_MM, Y_STEPS_PER_MM, Z_STEPS_PER_MM};
+  const byte dither[2] = {X_STEPS_PER_MM * PROBE_DITHER, Y_STEPS_PER_MM * PROBE_DITHER};
   byte pause = 0;
+  byte speedMultiplier = 100;
 
 //SD Card
   #include <SPI.h>
   #include <SD.h>
-  byte fileIndex[4];
+  //byte fileIndex[4];
   File root;
   File dataFile;
-  byte readFromSD;
   byte cardAvailable;
-  unsigned long fileSize;
+  int8_t fileIndexOffset;
+  //unsigned long fileSize;
   unsigned long fileProg;
-  byte fileProgThisLine;
-  byte fileProgNextLine;
   byte fileResumeIndex;
 
 //LCD
@@ -197,6 +278,14 @@ VALID GCODE
 
 //EEPROM
   #include <EEPROM.h>
+  #define EEPROM_SETTINGS_LOCATION 0
+  #define EEPROM_POSITION_LOCATION 20
+  #define EEPROM_POSITION_SIZE_BYTES 6
+  #define EEPROM_FILE_POSITION_LOCATION 48
+
+//DIAGNOSTICS
+  #include <MemoryFree.h>
+  int minMemory = 9999;
 
 void setup() {
 //Serial
@@ -217,8 +306,6 @@ void setup() {
   pinMode(TOOL_PIN, OUTPUT);
   tool(0);
 
-//EEPROM Settings
-  importSettings();
 
 //Other setup
   PRINT_LCD;
@@ -231,16 +318,36 @@ void setup() {
   }
 
 //Motors
-  motors.attachMotor(X_STEP_PIN, X_DIR_PIN, XY_EN_PIN);
-  motors.attachMotor(Y_STEP_PIN, Y_DIR_PIN, XY_EN_PIN);
-  motors.attachMotor(Z_STEP_PIN, Z_DIR_PIN, Z_EN_PIN);
+  motors.attachMotor(X_STEP_PIN, X_DIR_PIN);
+  motors.attachMotor(Y_STEP_PIN, Y_DIR_PIN);
+  motors.attachMotor(Z_STEP_PIN, Z_DIR_PIN);
+  pinMode(Z_EN_PIN, OUTPUT);
+
+//EEPROM Settings (MUST come after attachMotor functions
+  importSettings();
+  
+//Misc
+  loadFilePosition();
 }
 
 void loop(){
-  analogReadAll();    //Get endstop state and joystick position, report using global variables
-  runUI();            //Respond to button presses
-  runJoystick();      //Respond to joystick movements
-  getCommand();       //Respond to serial communications
-  printScreen();      //Update LCD when requested      
-  printPositionscreen();  //Pass position to runLCD function
+  while (1) loopAll();
+}
+
+void loopAll(){
+  #ifdef MOTOR_DEBUG
+    static unsigned long _t;
+    if (millis() > _t){
+      _t += 5000;
+      motors.printDebug();
+      //wdt_reset();
+    }
+  #endif
+  analogReadAll();    //Get endstop state and joystick position, report using global variables 
+  runUI();            //Respond to button presses 
+  runJoystick();      //Respond to joystick movements 
+  getCommand();       //Respond to serial communications 
+  printScreen();      //Update LCD when requested     
+  printPositionscreen();  //Pass position to runLCD function  
+  runMacros();        //Macro functions
 }
